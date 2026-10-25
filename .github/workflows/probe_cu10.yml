@@ -1,0 +1,40 @@
+name: Probe - hybrid-only cumulus at -10 C (manual)
+
+# Why does the KMLB hybrid find cumulus colder than -10 C near LC-39A where MRMS does not?
+# Actions tab -> "Probe - hybrid-only cumulus at -10 C" -> Run. Blank = the 24 built-in cases.
+on:
+  workflow_dispatch:
+    inputs:
+      hours:
+        description: "Optional UTC hours, space-separated, e.g. 2024-07-16T05:00 2025-06-02T16:00"
+        required: false
+        default: ""
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11", cache: pip }
+      - name: Install eccodes (pygrib needs the C library)
+        timeout-minutes: 15
+        run: |
+          APT="-o DPkg::Lock::Timeout=120 -o Acquire::Retries=3 -o Acquire::http::Timeout=30"
+          for i in 1 2 3; do
+            sudo timeout 240 apt-get $APT update -qq &&
+            sudo timeout 240 apt-get $APT install -y -qq libeccodes0 libeccodes-dev && exit 0
+            echo "apt attempt $i failed or hung; retrying in 20 s"; sleep 20
+          done
+          exit 1
+      - run: pip install -r requirements.txt
+      - name: Probe
+        env:
+          HOURS: ${{ inputs.hours }}
+        run: python probe_cu10.py $HOURS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: probe-cu10
+          path: probe_cu10_report.txt
