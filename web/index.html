@@ -125,9 +125,9 @@
 <header>
   <div>
     <div class="brand">CloudScope <span>KMLB Climatology</span></div>
-    <div class="tag">How often the KMLB hybrid — KMLB Level II wherever its beams reach, MRMS above —
-      would have called each pad violating, by time of year and time of day, scored with the same
-      rules as the MRMS climatology.</div>
+    <div class="tag">How often the KMLB hybrid — each map column wholly from KMLB Level II where it
+      samples the full depth, wholly from MRMS elsewhere — would have called each pad violating, by
+      time of year and time of day, scored with the same rules as the MRMS climatology.</div>
   </div>
   <div class="period"><b id="period">—</b><span id="samples"></span></div>
 </header>
@@ -213,7 +213,7 @@
 </div>
 
 <script>
-const VIEWER_VERSION = "kmlb-climo-v1";
+const VIEWER_VERSION = "kmlb-climo-v2";
 // The MRMS climatology, for side-by-side figures (same origin on github.io). Blank hides them.
 const MRMS_CLIMO_URL = "";
 let MREF = null;
@@ -289,7 +289,7 @@ function boot(){
   const ramp = `linear-gradient(90deg, ${STOPS.map(([x, c]) => `${c} ${x*100}%`).join(",")})`;
   $("ramp1").style.background = ramp; $("ramp2").style.background = ramp;
   $("notes").innerHTML = `<p><b>What this is.</b> Every hour from ${M.period[0]} to ` +
-    `${M.period[1]}, ${M.kmlb ? "KMLB Level II merged with MRMS above KMLB's beams" : "the MRMS archive"}, ` +
+    `${M.period[1]}, ${M.kmlb ? "KMLB Level II and MRMS in single-source columns" : "the MRMS archive"}, ` +
     `scored at each pad with the same NASA-STD-4010 rules the live page applies. ` +
     `A figure is the share of hourly samples that were violating (or watch or worse) at that local ` +
     `hour, within ±${M.window_days} days of the date.</p>` +
@@ -656,12 +656,14 @@ function drawCov(){
   Object.entries(M.coverage).forEach(([ym, c]) => { const y = ym.slice(0, 4);
     yrs[y] = yrs[y] || {s: 0, p: 0, sat: 0, wind: 0, has: false, k: 0, kf: 0, hasK: false};
     yrs[y].s += c.scored; yrs[y].p += c.planned;
+    if (c.glm != null){ yrs[y].g = (yrs[y].g || 0) + c.glm; yrs[y].hasG = true; }
     if (c.kmlb != null){ yrs[y].k += c.kmlb; yrs[y].kf += c.kmlb_full; yrs[y].hasK = true; }
     if (c.sat != null){ yrs[y].sat += c.sat; yrs[y].wind += c.wind; yrs[y].has = true; } });
   const pct = (a, b) => Math.round(100 * a / Math.max(b, 1));
   $("cov").innerHTML = Object.entries(yrs).map(([y, c]) =>
     `<dt>${y}</dt><dd>${c.s.toLocaleString()} of ${c.p.toLocaleString()} hours (${pct(c.s, c.p)}%)` +
-    (c.has ? `<br><span style="color:var(--dim)">satellite tops ${pct(c.sat, c.s)}% · anvil winds ${pct(c.wind, c.s)}%</span>` : "") +
+    (c.has ? `<br><span style="color:var(--dim)">satellite tops ${pct(c.sat, c.s)}% · anvil winds ${pct(c.wind, c.s)}%` +
+      (c.hasG ? ` · GLM lightning ${pct(c.g, c.s)}%` : "") + `</span>` : "") +
     (c.hasK ? `<br><span style="color:var(--dim)">KMLB volume ${pct(c.k, c.s)}% · full depth over the pads ${pct(c.kf, c.s)}%</span>` : "") +
     `</dd>`).join("");
 }
