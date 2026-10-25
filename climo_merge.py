@@ -142,6 +142,7 @@ def main():
     map_n = np.zeros((12, 24), np.int64)
     map_red = None
     coverage, classifiers, years = {}, set(), set()
+    glm_months = False
     kmlb_months = False
     first = last = None
     for f in files:
@@ -167,6 +168,9 @@ def main():
         ym = os.path.basename(f)[:6]
         coverage[ym] = {"scored": int(len(z["t"])), "planned": int(z["hours_planned"]),
                         "skipped": int(len(z["skipped"]))}
+        if "glm" in z.files:            # GLM total lightning: hours where it was complete enough to use
+            glm_months = True
+            coverage[ym]["glm"] = int(z["glm"].sum())
         if "sat" in z.files:
             coverage[ym]["sat"] = int(z["sat"].sum()); coverage[ym]["wind"] = int(z["wind"].sum())
             coverage[ym]["satup"] = int((z["satup"] > 0).sum())
@@ -398,8 +402,12 @@ def main():
         "map": {"ny": int(ny), "nx": int(nx), "months": 12, "hours": 24,
                 "samples": map_n.tolist()},
         "domain": domain, "coverage": coverage,
-        "notes": ["Lightning is NLDN cloud-to-ground only - intracloud-only lightning is missed, "
-                  "so the lightning rule is undercounted.",
+        "notes": [("Lightning is NLDN cloud-to-ground plus GOES GLM total lightning (intracloud and "
+                   "cloud-to-cloud flashes as well), the 30 minutes before each sample. Hours whose "
+                   "GLM files were incomplete use NLDN alone (see Coverage); GLM locates flashes to "
+                   "~8 km, coarser than NLDN." if glm_months else
+                   "Lightning is NLDN cloud-to-ground only - intracloud-only lightning is missed, "
+                   "so the lightning rule is undercounted."),
                   "Isotherm heights come from the MRMS model freezing level and an assumed lapse "
                   "rate; historical BUFKIT soundings are not available.",
                   "Anvil exception part (a) uses the 0 C slice, not measured echo bases.",
@@ -421,14 +429,15 @@ def main():
                   "period is the field-mill record's."] if FM is not None else []) + [
                   "One fixed classifier version across all years; MRMS itself was updated "
                   "several times over the period."] + ([
-                  "Radar is the KMLB + MRMS hybrid: KMLB Level II wherever its beams sample a height "
-                  "over a map cell, MRMS above its highest beam and in the cone of silence. Each hour "
-                  "uses the KMLB volume whose scan midpoint is within 6 minutes of the sample; hours "
-                  "without one are scored on MRMS alone (see Coverage).",
-                  "With AVSET on, KMLB usually stops at 6.4 deg, about 6.8 km over the pads, so the "
-                  "-20 C and anvil rules mostly rest on MRMS; KMLB covers the full depth mainly when "
-                  "AVSET is off for launch countdowns. The differences from the MRMS climatology are "
-                  "therefore largest in the low-level rules.",
+                  "Radar is the KMLB + MRMS hybrid with single-source columns: a map column comes "
+                  "wholly from KMLB Level II where KMLB samples it from 3 km or lower up to 15 km, and "
+                  "wholly from MRMS everywhere else - never a mix of the two within a column. Each "
+                  "hour uses the KMLB volume whose scan midpoint is within 6 minutes of the sample; "
+                  "hours without one are scored on MRMS alone (see Coverage).",
+                  "With AVSET on, KMLB usually stops at 6.4 deg, about 6.8 km over the pads, so pad "
+                  "columns are then MRMS; they are KMLB mainly when AVSET is off for launch countdowns "
+                  "or deep convection keeps it scanning. 'Full depth over the pads' in Coverage is the "
+                  "share of hours whose LC-39A column came from KMLB.",
                   "KMLB quality control: below 3 km, gates under 35 dBZ with RHOHV below 0.8, or under "
                   "20 dBZ with RHOHV missing, are removed as clutter; everywhere, isolated patches under "
                   "20 gates and 20 dBZ are removed as speckle. MRMS applies its own, different QC.",

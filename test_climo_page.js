@@ -28,12 +28,12 @@ setTimeout(() => {
   let bad = 0; const ok = (c, m) => { console.log((c ? "  ok    " : "  FAIL  ") + m); if (!c) bad++; };
   const M = vm.runInContext("M", ctx);
   ok(M && M.kmlb === true, "climo.json loaded, kmlb: true");
-  ok(/KMLB Level II merged with MRMS above KMLB's beams/.test(els.notes.innerHTML) && /Page kmlb-climo-v1/.test(els.notes.innerHTML), "notes: hybrid description and page version");
+  ok(/KMLB Level II and MRMS in single-source columns/.test(els.notes.innerHTML) && /Page kmlb-climo-v2/.test(els.notes.innerHTML), "notes: hybrid description and page version");
   ok(/KMLB \+ MRMS hybrid/.test(els.notes.innerHTML), "caveats include the KMLB notes");
   ok(/KMLB volume 100% · full depth over the pads 25%/.test(strip(els.cov.innerHTML)), "coverage: " + (strip(els.cov.innerHTML).match(/KMLB volume[^<]*/) || [""])[0]);
   ok(vm.runInContext("MREF", ctx) !== null, "MRMS climatology loaded for comparison");
   ok(/MRMS climatology \d+(\.\d)?%/.test(strip(els["g-viol"].innerHTML)), "headline: " + strip(els["g-viol"].innerHTML));
   ok(/MRMS \d+(\.\d)?%/.test(strip(els["g-rules"].innerHTML)), "rule list shows the MRMS share beside each rule");
-  ok(/mrms-v19\+kmlb-v1/.test(els.samples.textContent), "header: " + els.samples.textContent);
+  ok(/mrms-v19\+kmlb-v2/.test(els.samples.textContent), "header: " + els.samples.textContent);
   console.log(`\n${bad} failure(s)`); process.exit(bad ? 1 : 0);
 }, 500);

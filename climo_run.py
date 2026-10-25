@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-CloudScope KMLB climatology - score one month hour by hour with the KMLB + MRMS hybrid: KMLB
-Level II wherever its beams sample a height, MRMS above (kmlb_classify.KmlbFrame - the same merge
-and clutter screens as the live KMLB page), scored with the SAME pinned classifier as the MRMS
-climatology, so the two records differ only in the radar.
+CloudScope KMLB climatology - score one month hour by hour with the KMLB + MRMS hybrid in
+single-source columns: each map column wholly from KMLB Level II where KMLB samples it from 3 km up
+to 15 km, wholly from MRMS elsewhere (kmlb_classify.KmlbFrame, COLUMN_MODE "single" - the same
+merge and clutter screens as the live KMLB page), scored with the SAME pinned classifier as the MRMS
+climatology, so the two records differ only in the radar. Lightning: NLDN CG + GOES GLM total
+lightning (see GLM_START), as in the MRMS climatology.
 
 KMLB (unidata-nexrad-level2 on AWS, measured Oct 2026): every hour of the period is archived; the
 volume whose scan midpoint is nearest the sample time is used if within kmlb_classify.TOL_MIN (6 min).
@@ -99,6 +101,14 @@ UNUSED = ("high", "et18")                       # fetched live for display only
 STEINER_DIR, STEINER_KM = "MergedReflectivityQC_03.00", 3.0
 GOES_SWITCH = datetime.datetime(2025, 4, 7)
 GOES_BUCKETS = ("https://noaa-goes16.s3.amazonaws.com", "https://noaa-goes19.s3.amazonaws.com")
+# GOES GLM total lightning (intracloud and cloud-to-cloud as well as cloud-to-ground) for rule
+# 4.1.1, alongside NLDN CG. The archive starts 2018-02-13 (GOES-16; probed Oct 2026). Each sample
+# reads the 20-second files covering the 30 minutes before it (~90) and parses them with the live
+# classifier's own reader (mc._glm_read: quality flag 0, domain + 25 nmi). An hour counts as having
+# GLM only when GLM_MIN_SHARE of the expected files exist and at most GLM_MAX_FAIL fail; otherwise it
+# is scored on NLDN alone and counted as such in Coverage.
+GLM_START = datetime.datetime(2018, 2, 13)
+GLM_THREADS, GLM_MIN_SHARE, GLM_MAX_FAIL = 12, 0.8, 0.1
 SAT_TOL_MIN, WIND_TOL_MIN = 12, 30
 _goes_listings = {}
 
@@ -180,6 +190,75 @@ def nearest(sess, product, t, tol_min):
 
 def goes_bucket(t):
     return GOES_BUCKETS[0] if t < GOES_SWITCH else GOES_BUCKETS[1]
+
+
+_glm_hours = {}
+
+
+def glm_keys_hour(sess, bucket, hr):
+    """[(file start, key)] of GLM-L2-LCFA files in one hour folder; cached per process."""
+    ck = (bucket, hr)
+    if ck not in _glm_hours:
+        out, token = [], None
+        prefix = f"GLM-L2-LCFA/{hr:%Y}/{hr.timetuple().tm_yday:03d}/{hr:%H}/"
+        while True:
+            url = (f"{bucket}/?list-type=2&prefix={prefix}"
+                   + (f"&continuation-token={requests.utils.quote(token)}" if token else ""))
+            r = sess.get(url, timeout=60)
+            r.raise_for_status()
+            for key in re.findall(r"<Key>([^<]+)</Key>", r.text):
+                m = re.search(r"_s(\d{4})(\d{3})(\d{2})(\d{2})(\d{2})", key)
+                if m:
+                    y, d, H, M, S = map(int, m.groups())
+                    out.append((datetime.datetime(y, 1, 1, H, M, S) + datetime.timedelta(days=d - 1), key))
+            m = re.search(r"<NextContinuationToken>([^<]+)</NextContinuationToken>", r.text)
+            if not m:
+                break
+            token = m.group(1)
+        _glm_hours[ck] = sorted(set(out))
+    return _glm_hours[ck]
+
+
+def _glm_one(sess, bucket, key):
+    """One GLM file's bytes, or None if it cannot be fetched. Download only: the parse happens in
+    the calling thread, because netCDF4/HDF5 is not thread-safe - parsing on the download threads
+    segfaulted in testing."""
+    try:
+        r = sess.get(f"{bucket}/{key}", timeout=60)
+        r.raise_for_status()
+        return r.content
+    except Exception:
+        return None
+
+
+def glm_flashes(sess, t):
+    """(flashes [(lat, lon, time)], files read, ok) for the 30 minutes up to t. Never raises."""
+    if t < GLM_START:
+        return [], 0, False
+    try:
+        bucket = goes_bucket(t)
+        t0 = t - datetime.timedelta(minutes=mc.GLM_WINDOW_MIN)
+        hrs = {t0.replace(minute=0, second=0, microsecond=0),
+               (t - datetime.timedelta(seconds=1)).replace(minute=0, second=0, microsecond=0)}
+        keys = [k for hr in sorted(hrs) for st, k in glm_keys_hour(sess, bucket, hr)
+                if t0 - datetime.timedelta(seconds=20) < st <= t]
+        expected = mc.GLM_WINDOW_MIN * 3                # 20-second files
+        if len(keys) < GLM_MIN_SHARE * expected:
+            return [], len(keys), False
+
+        flashes, bad = [], 0
+        with cf.ThreadPoolExecutor(max_workers=GLM_THREADS) as gp:
+            raws = list(gp.map(lambda k: _glm_one(sess, bucket, k), keys))
+        for raw in raws:                    # parse serially (HDF5 is not thread-safe)
+            try:
+                flashes += mc._glm_read(raw) if raw is not None else []
+                bad += raw is None
+            except Exception:
+                bad += 1
+        return flashes, len(keys), bad <= GLM_MAX_FAIL * len(keys)
+    except Exception as e:
+        logging.warning(f"{t:%Y-%m-%d %HZ} GLM: {type(e).__name__}: {e}")
+        return [], 0, False
 
 
 def goes_nearest(sess, t, product, match, tol_min):
@@ -330,7 +409,7 @@ def score_hours(hours):
     """Score a contiguous run of hourly sample times, in order. Returns a dict of arrays."""
     sess = _session()
     pads = list(mc.SITES)
-    rec = {"t": [], "status": [], "red": [], "yel": [], "sat": [], "wind": [], "satup": [], "feat": [],
+    rec = {"t": [], "status": [], "red": [], "yel": [], "sat": [], "wind": [], "satup": [], "feat": [], "glm": [], "glm_n": [],
            "k_found": [], "k_top": [], "k_lc39a": [], "k_off": []}
     acc = None
     z0, z0_t, prev_att, prev_t = None, None, None, None
@@ -354,6 +433,7 @@ def score_hours(hours):
             futs = {k: pool.submit(fetch, sess, u, mc.PRODUCTS[k][1]) for k, u in urls.items() if u}
             kfut = pool.submit(kmlb_load, sess, t)
             wfut = pool.submit(anvil_wind, sess, t)
+            gfut = pool.submit(glm_flashes, sess, t)
             su = nearest(sess, STEINER_DIR, t, MATCH_MIN)
             sfut = pool.submit(fetch, sess, su, -999.0) if su else None
             F, la, lo = {}, None, None
@@ -409,7 +489,9 @@ def score_hours(hours):
             except Exception as e:
                 sat = None
                 logging.warning(f"{t:%Y-%m-%d %HZ} satellite: {type(e).__name__}: {e}")
-            status, red, yel, cls, top, diag = mc.evaluate(F, zz, la, lo, history, None, sep, None, sat)
+            flashes, _, glm_ok = gfut.result()
+            ltg_nm = mc.glm_distance(flashes, t.isoformat(), la, lo)[0] if glm_ok else None
+            status, red, yel, cls, top, diag = mc.evaluate(F, zz, la, lo, history, None, sep, ltg_nm, sat)
             prev_att, prev_t = (cls == 6), t
 
             from scipy.ndimage import distance_transform_edt as _edt
@@ -419,8 +501,13 @@ def score_hours(hours):
             fv = np.full((len(pads), len(FEAT_NAMES)), 255, np.uint8)
             for q, key in enumerate(FEAT_DIST):
                 msk = diag["feat"][key]
-                if msk.any():
-                    dist = _edt(~msk, sampling=(dlat_km, dlon_km)) / 1.852
+                dist = _edt(~msk, sampling=(dlat_km, dlon_km)) / 1.852 if msk.any() else None
+                # v19 records the lightning feature from NLDN cells only, while its verdict also
+                # counts GLM (ltg_nm). Recording the nearer of the two keeps the merge's re-score
+                # exact - it caught the mismatch (121/132) when GLM was first added.
+                if key == "ltg" and ltg_nm is not None:
+                    dist = ltg_nm if dist is None else np.minimum(dist, ltg_nm)
+                if dist is not None:
                     for p_, (j_, i_) in enumerate(ji):
                         v_ = dist[j_, i_]
                         fv[p_, q] = 255 if v_ > 25.4 else int(np.ceil(v_ * 10 - 1e-6))
@@ -437,6 +524,7 @@ def score_hours(hours):
                 rb.append(sum(1 << b for b, k in enumerate(mc.RULE_KEYS) if red[k][j, i]))
                 yb.append(sum(1 << b for b, k in enumerate(mc.RULE_KEYS) if yel[k][j, i] and not red[k][j, i]))
             rec["sat"].append(sat is not None); rec["wind"].append(wind is not None)
+            rec["glm"].append(bool(glm_ok)); rec["glm_n"].append(len(flashes) if glm_ok else 0)
             ki = kf.info if kf is not None else {}
             rec["k_found"].append(kf is not None)
             rec["k_top"].append(int(round(10 * ki["top_deg"])) if kf is not None else 0)
@@ -493,7 +581,7 @@ def main():
     else:
         with mp.get_context("spawn").Pool(len(chunks)) as pool:
             parts = pool.map(score_hours, chunks)
-    rec = {"t": [], "status": [], "red": [], "yel": [], "sat": [], "wind": [], "satup": [], "feat": [],
+    rec = {"t": [], "status": [], "red": [], "yel": [], "sat": [], "wind": [], "satup": [], "feat": [], "glm": [], "glm_n": [],
            "k_found": [], "k_top": [], "k_lc39a": [], "k_off": []}
     acc, skipped = None, []
     for p in parts:
@@ -526,7 +614,8 @@ def main():
         # volume midpoint's offset from the sample (min x 10)
         k_found=np.array(rec["k_found"], bool), k_top=np.array(rec["k_top"], np.uint16),
         k_lc39a=np.array(rec["k_lc39a"], np.uint16), k_off=np.array(rec["k_off"], np.int16),
-        classifier=np.array(f"{mc.VIEWER_VERSION_EXPECTED}+{K.KMLB_VERSION}"),
+        glm=np.array(rec["glm"], bool), glm_n=np.array(rec["glm_n"], np.uint32),
+        classifier=np.array(f"{mc.VIEWER_VERSION_EXPECTED}+{K.KMLB_VERSION}+glm"),
         hours_planned=np.array(len(hours)))
     nk = int(np.sum(rec["k_found"]))
     nfull = int(np.sum(np.array(rec["k_lc39a"]) >= LC39A_FULL_HM))

@@ -88,7 +88,7 @@ full = (z["k_lc39a"] >= 150)
 # each hour takes the volume whose midpoint is nearest: 14:00Z -> the 13:56 volume (full), 13:00Z -> 12:56 (truncated)
 check(full.sum() == 3 and [int(t[11:13]) for t in z["t"][full]] == [14, 15, 16], f"full depth over LC-39A at 14-16Z (volumes starting 13:56-15:56): {z['t'][full].tolist()}")
 check(set(z["k_top"][~full].tolist()) == {64} and (z["k_lc39a"][~full] == 68).all(), "other hours: 6.4 deg, LC-39A sampled to 6.8 km")
-check(str(z["classifier"]) == "mrms-v19+kmlb-v1", f"classifier recorded as {z['classifier']}")
+check(str(z["classifier"]) == "mrms-v19+kmlb-v2+glm", f"classifier recorded as {z['classifier']}")
 check((np.abs(z["k_off"]) <= 30).all(), f"volume midpoints within 3 min of the samples: {sorted(set(z['k_off'].tolist()))}")
 
 print("\n== same hours with no KMLB volumes: MRMS only")
@@ -96,6 +96,9 @@ zo = run_month("off", os.path.join(W, "off"))
 check(len(zo["t"]) == 12 and not zo["k_found"].any(), "every hour still scored, none with KMLB")
 diff = int((z["feat"] != zo["feat"]).any(axis=2).sum())
 check(diff > 0, f"the hybrid changes the recorded features in {diff} of {z['feat'].shape[0] * z['feat'].shape[1]} pad-samples")
+# single-source columns: only hours whose volume covers the pads' columns fully can differ at the pads
+dh = (z["feat"] != zo["feat"]).any(axis=2).any(axis=1)
+check(not dh[~full].any() and dh[full].all(), f"features differ exactly in the full-depth hours: {[t[11:13] for t in z['t'][dh]]}")
 print(f"   status, hybrid vs MRMS only, first sample: {z['status'][0].tolist()} vs {zo['status'][0].tolist()}")
 
 print("\n== merge with the real field-mill file")
@@ -121,7 +124,7 @@ for label, d in (("hybrid", "on"), ("MRMS climatology file", "mrms")):
         cov = meta["coverage"]["202507"]
         check(meta["kmlb"] is True and cov["kmlb"] == 12 and cov["kmlb_full"] == 3, f"coverage: {cov}")
         check(any("KMLB + MRMS hybrid" in n for n in meta["notes"]), "KMLB caveats in the notes")
-        check(meta["classifier"] == ["mrms-v19+kmlb-v1"], f"classifier {meta['classifier']}")
+        check(meta["classifier"] == ["mrms-v19+kmlb-v2+glm"], f"classifier {meta['classifier']}")
         shutil.rmtree("/tmp/kclimo_site", ignore_errors=True); shutil.copytree(site, "/tmp/kclimo_site")
     else:
         check(meta["kmlb"] is False and not any("hybrid" in n for n in meta["notes"]) and "kmlb" not in meta["coverage"]["202507"],
