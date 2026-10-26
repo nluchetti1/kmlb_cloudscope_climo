@@ -22,6 +22,10 @@ kmlb_cloudscope_climo/
 └── tests (optional): test_climo_kmlb.py, test_climo_page.js, kmlb_synth.py
 ```
 
+## GLM
+Lightning flashes come from the Cape GLM archive (the `cape_glm` repo), which must be published
+first. Set `GLM_URL` in climo_run.py if it lives elsewhere.
+
 ## First run
 1. Commit, then Settings -> Pages -> deploy from `gh-pages` (created by the first merge).
 2. Actions -> "CloudScope KMLB climatology" -> Run with start `2025-07`, end `2025-07`: one month,

@@ -66,6 +66,7 @@ import argparse
 import calendar
 import concurrent.futures as cf
 import datetime
+import io
 import logging
 import multiprocessing as mp
 import os
@@ -102,13 +103,15 @@ STEINER_DIR, STEINER_KM = "MergedReflectivityQC_03.00", 3.0
 GOES_SWITCH = datetime.datetime(2025, 4, 7)
 GOES_BUCKETS = ("https://noaa-goes16.s3.amazonaws.com", "https://noaa-goes19.s3.amazonaws.com")
 # GOES GLM total lightning (intracloud and cloud-to-cloud as well as cloud-to-ground) for rule
-# 4.1.1, alongside NLDN CG. The archive starts 2018-02-13 (GOES-16; probed Oct 2026). Each sample
-# reads the 20-second files covering the 30 minutes before it (~90) and parses them with the live
-# classifier's own reader (mc._glm_read: quality flag 0, domain + 25 nmi). An hour counts as having
-# GLM only when GLM_MIN_SHARE of the expected files exist and at most GLM_MAX_FAIL fail; otherwise it
-# is scored on NLDN alone and counted as such in Coverage.
+# 4.1.1, alongside NLDN CG. Flashes come from the Cape GLM archive (the cape_glm repo): every GOES
+# GLM file read ONCE and reduced to the flashes over this map + 25 nmi, one file per month, with
+# the live reader's filter (quality flag 0). Reading ~90 GLM files per sample here instead cost
+# ~2 h per month job (Oct 2026). A sample counts as having GLM only when GLM_MIN_SHARE of the 90
+# expected 20-second files in its 30-minute window exist and at most GLM_MAX_FAIL of them failed;
+# otherwise it is scored on NLDN alone and counted as such in Coverage.
 GLM_START = datetime.datetime(2018, 2, 13)
-GLM_THREADS, GLM_MIN_SHARE, GLM_MAX_FAIL = 12, 0.8, 0.1
+GLM_MIN_SHARE, GLM_MAX_FAIL = 0.8, 0.1
+GLM_URL = os.environ.get("GLM_URL", "https://nluchetti1.github.io/cape_glm/data")
 SAT_TOL_MIN, WIND_TOL_MIN = 12, 30
 _goes_listings = {}
 
@@ -192,72 +195,49 @@ def goes_bucket(t):
     return GOES_BUCKETS[0] if t < GOES_SWITCH else GOES_BUCKETS[1]
 
 
-_glm_hours = {}
+_glm_months = {}
 
 
-def glm_keys_hour(sess, bucket, hr):
-    """[(file start, key)] of GLM-L2-LCFA files in one hour folder; cached per process."""
-    ck = (bucket, hr)
-    if ck not in _glm_hours:
-        out, token = [], None
-        prefix = f"GLM-L2-LCFA/{hr:%Y}/{hr.timetuple().tm_yday:03d}/{hr:%H}/"
-        while True:
-            url = (f"{bucket}/?list-type=2&prefix={prefix}"
-                   + (f"&continuation-token={requests.utils.quote(token)}" if token else ""))
-            r = sess.get(url, timeout=60)
+def glm_month(sess, y, m):
+    """One month of the Cape GLM archive (dict of arrays), cached per process; None if missing."""
+    k = (y, m)
+    if k not in _glm_months:
+        try:
+            r = sess.get(f"{GLM_URL}/glm_{y:04d}{m:02d}.npz", timeout=120)
             r.raise_for_status()
-            for key in re.findall(r"<Key>([^<]+)</Key>", r.text):
-                m = re.search(r"_s(\d{4})(\d{3})(\d{2})(\d{2})(\d{2})", key)
-                if m:
-                    y, d, H, M, S = map(int, m.groups())
-                    out.append((datetime.datetime(y, 1, 1, H, M, S) + datetime.timedelta(days=d - 1), key))
-            m = re.search(r"<NextContinuationToken>([^<]+)</NextContinuationToken>", r.text)
-            if not m:
-                break
-            token = m.group(1)
-        _glm_hours[ck] = sorted(set(out))
-    return _glm_hours[ck]
-
-
-def _glm_one(sess, bucket, key):
-    """One GLM file's bytes, or None if it cannot be fetched. Download only: the parse happens in
-    the calling thread, because netCDF4/HDF5 is not thread-safe - parsing on the download threads
-    segfaulted in testing."""
-    try:
-        r = sess.get(f"{bucket}/{key}", timeout=60)
-        r.raise_for_status()
-        return r.content
-    except Exception:
-        return None
+            with np.load(io.BytesIO(r.content)) as z:
+                _glm_months[k] = {n: z[n] for n in ("flash_t", "flash_lat", "flash_lon", "file_t", "file_ok")}
+        except Exception as e:
+            logging.warning(f"GLM archive {y:04d}-{m:02d}: {type(e).__name__}: {e}")
+            _glm_months[k] = None
+    return _glm_months[k]
 
 
 def glm_flashes(sess, t):
-    """(flashes [(lat, lon, time)], files read, ok) for the 30 minutes up to t. Never raises."""
+    """(flashes [(lat, lon, time)], files in the window, ok) for the 30 minutes up to t, from the
+    Cape GLM archive. Never raises."""
     if t < GLM_START:
         return [], 0, False
     try:
-        bucket = goes_bucket(t)
         t0 = t - datetime.timedelta(minutes=mc.GLM_WINDOW_MIN)
-        hrs = {t0.replace(minute=0, second=0, microsecond=0),
-               (t - datetime.timedelta(seconds=1)).replace(minute=0, second=0, microsecond=0)}
-        keys = [k for hr in sorted(hrs) for st, k in glm_keys_hour(sess, bucket, hr)
-                if t0 - datetime.timedelta(seconds=20) < st <= t]
-        expected = mc.GLM_WINDOW_MIN * 3                # 20-second files
-        if len(keys) < GLM_MIN_SHARE * expected:
-            return [], len(keys), False
-
-        flashes, bad = [], 0
-        with cf.ThreadPoolExecutor(max_workers=GLM_THREADS) as gp:
-            raws = list(gp.map(lambda k: _glm_one(sess, bucket, k), keys))
-        for raw in raws:                    # parse serially (HDF5 is not thread-safe)
-            try:
-                flashes += mc._glm_read(raw) if raw is not None else []
-                bad += raw is None
-            except Exception:
-                bad += 1
-        return flashes, len(keys), bad <= GLM_MAX_FAIL * len(keys)
-    except Exception as e:
-        logging.warning(f"{t:%Y-%m-%d %HZ} GLM: {type(e).__name__}: {e}")
+        parts = [glm_month(sess, y, m) for y, m in sorted({(t0.year, t0.month), (t.year, t.month)})]
+        if any(p is None for p in parts):
+            return [], 0, False
+        cat = lambda k: np.concatenate([p[k] for p in parts])
+        e = lambda x: (x - datetime.datetime(1970, 1, 1)).total_seconds()
+        ft, fo = cat("file_t"), cat("file_ok")
+        win = (ft > e(t0) - 20) & (ft <= e(t))
+        n, good = int(win.sum()), int(fo[win].sum())
+        if n < GLM_MIN_SHARE * mc.GLM_WINDOW_MIN * 3:
+            return [], n, False
+        tt = cat("flash_t")
+        sel = (tt > e(t0)) & (tt <= e(t))
+        base = datetime.datetime(1970, 1, 1)
+        flashes = [(float(a), float(b), base + datetime.timedelta(seconds=float(c)))
+                   for a, b, c in zip(cat("flash_lat")[sel], cat("flash_lon")[sel], tt[sel])]
+        return flashes, n, (n - good) <= GLM_MAX_FAIL * n
+    except Exception as ex:
+        logging.warning(f"{t:%Y-%m-%d %HZ} GLM: {type(ex).__name__}: {ex}")
         return [], 0, False
 
 
@@ -418,7 +398,11 @@ def score_hours(hours):
     # 4, not 8: each decode briefly holds a full CONUS grid (~200 MB at peak), and with four
     # processes per job 8 threads apiece could hold ~6 GB at once on a 16 GB runner.
     pool = cf.ThreadPoolExecutor(max_workers=4)
-    for t in hours:
+    for n_done, t in enumerate(hours):
+        if n_done and n_done % 50 == 0:
+            el = time.monotonic() - t_start
+            logging.info(f"{t:%Y-%m-%d %HZ}: {n_done}/{len(hours)} samples, {el / n_done:.1f} s per sample, "
+                         f"~{el / n_done * (len(hours) - n_done) / 60:.0f} min to go in this chunk")
         if time.monotonic() - t_start > JOB_BUDGET_S:
             skipped.append((t.isoformat(), "job time budget spent"))
             continue
