@@ -65,7 +65,10 @@ jobs:
     timeout-minutes: 350
     strategy:
       fail-fast: false
-      max-parallel: 20
+      # 8, not 20: a free account runs at most 20 jobs at once across ALL repos. At 20, two
+      # climatology runs filled every slot and the live pages' 5-minute jobs never got a runner
+      # (Oct 2026). 8 per heavy workflow leaves room for the live sites.
+      max-parallel: 8
       matrix:
         month: ${{ fromJson(needs.plan.outputs.months) }}
     steps:
