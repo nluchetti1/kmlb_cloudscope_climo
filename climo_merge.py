@@ -38,10 +38,16 @@ WINDOW_D = 7
 KMLB_FULL_HM = 150     # KMLB sampled LC-39A to 15 km or more (100 m units) = full depth
 
 
+# Field-mill threshold for the KSC 1-minute ARCHIVE. The standard's 1000 V/m applies to what the LWO
+# watches live; the archive's minute values run ~15% lower in logged field-mill episodes. Against the
+# LWO logs (case replays, Nov 2026): 1000 V/m gives POD 0.62, FAR 0.13; 850 V/m gives POD 0.90,
+# FAR 0.16, kappa 0.73 -> 0.89. Archive data only - never the live LPLWS feed.
+FM_ARCHIVE_VM = 850.0
+
 # The standard settings. The page's "what if" panel starts from these and re-scores from features.
 STANDARD = {"ltg_nm": 10.0, "ltg_watch_nm": 20.0, "cu10_nm": 5.0, "cu20_nm": 10.0,
             "att_nm": 3.0, "det_nm": 3.0, "att_ltg_nm": 10.0, "excep_nm": 5.0, "mrr_dbz": 7.5,
-            "thick_mrr_dbz": 7.5, "margin_nm": 2.0, "fm_vm": 1000.0, "fm_nm": 5.0,
+            "thick_mrr_dbz": 7.5, "margin_nm": 2.0, "fm_vm": FM_ARCHIVE_VM, "fm_nm": 5.0,
             "anvil_exc": True, "thick_exc": True}
 FEAT_DIST = ["cuthru", "cu10", "cu20", "att", "det", "warm", "thick", "ltg"]
 
@@ -106,7 +112,7 @@ def main():
     ap.add_argument("--fieldmill", default="fieldmill/fieldmill_hourly.npz")
     a, _ = ap.parse_known_args()
     # ---- field mills (LLCC 4.1.2), applied here on top of the radar result ------------------------
-    # Any one-minute |E| >= 1000 V/m from a mill within 5 nmi of the pad in the 15 minutes before
+    # Any one-minute |E| >= FM_ARCHIVE_VM (850 V/m; see its note) from a mill within 5 nmi of the pad in the 15 minutes before
     # the sample -> violating; within 7 nmi -> watch (the usual 2 nmi margin). The prep script
     # reduced the minute CSVs to per-hour 15-minute maxima. Field-mill EXCEPTIONS in other rules are
     # not modelled; they only ever relieve a violation, so leaving them out is the conservative side.
@@ -199,9 +205,9 @@ def main():
                     ok5 = FM["n15"][hi, n5] > 0
                     if not ok5.any():
                         use[p] = False; continue
-                    mill_red[p] = bool(((FM["max15"][hi, n5] >= 1000) & ok5).any())
+                    mill_red[p] = bool(((FM["max15"][hi, n5] >= FM_ARCHIVE_VM) & ok5).any())
                     n7 = FM["near7"][name]
-                    mill_watch[p] = bool(((FM["max15"][hi, n7] >= 1000) & (FM["n15"][hi, n7] > 0)).any())
+                    mill_watch[p] = bool(((FM["max15"][hi, n7] >= FM_ARCHIVE_VM) & (FM["n15"][hi, n7] > 0)).any())
                     pi = FM["pads"].index(name)
                     fm_ex[name] = fm_ex.get(name, 0) + int(FM["pex"][hi, pi])
                     fm_va[name] = fm_va.get(name, 0) + int(FM["pva"][hi, pi])
@@ -421,8 +427,10 @@ def main():
                   "(band 8, then 32 kt in every direction, as fallbacks).",
                   "GOES-16 is used before 7 Apr 2025 and GOES-19 from then on.",
                  ] + ([
-                  "Field mills (LLCC 4.1.2): violating if any one-minute |E| >= 1000 V/m from a mill "
-                  "within 5 nmi of the pad in the 15 minutes before; watch within 7 nmi. Field-mill "
+                  f"Field mills (LLCC 4.1.2): violating if any one-minute |E| >= {FM_ARCHIVE_VM:.0f} V/m from a mill "
+                  "within 5 nmi of the pad in the 15 minutes before; watch within 7 nmi. The standard's 1000 V/m "
+                  "is for the live feed: the KSC 1-minute archive reads ~15% lower in logged episodes, and "
+                  f"{FM_ARCHIVE_VM:.0f} V/m matches the LWO logs best (case replays, Nov 2026). Field-mill "
                   "exceptions in other rules are not modelled - they only relieve a violation, so "
                   "this is the conservative side.",
                   "With field mills included, only hours with mill data count, for every rule, so the "
@@ -447,6 +455,12 @@ def main():
                   "records differ only in the radar."] if kmlb_months else []),
         "kmlb": kmlb_months,
     }
+    if any("+conn" in c for c in classifiers):      # cumulus connectivity applied (LLCCR 35)
+        meta["notes"].insert(1, "Physically connected cumulus are evaluated as one cloud (NASA-STD-4010B "
+                             "LLCCR 35): if any part of a connected cumulus mass reaches -20 C, -10 C or a top "
+                             "colder than +5 C, the whole mass does, and standoffs are measured to its nearest "
+                             "edge. Connected means touching radar echo of 0 dBZ or more; anvil and layered echo "
+                             "never connect cumulus (4.3a, 4.3c). The 4.3b anvil exception is not applied.")
     with open(os.path.join(a.site, "climo.json"), "w") as fp:
         json.dump(meta, fp)
     if os.path.exists(os.path.join(a.web, "index.html")):

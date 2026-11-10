@@ -9,7 +9,7 @@ mills as the MRMS climatology - so the two records differ only in the radar.
 kmlb_cloudscope_climo/
 ├── climo_run.py            scores one month (MRMS climatology's script + the KMLB hybrid)
 ├── climo_merge.py          merges months, publishes the site (same script works for MRMS-only months)
-├── mrms_classify.py        pinned classifier - byte-identical to the MRMS climatology's (v19)
+├── mrms_classify.py        the MRMS climatology's v19 + cumulus connectivity (see the end of this file)
 ├── kmlb_classify.py        pinned KMLB module (hybrid merge + clutter screens) from the live KMLB repo
 ├── requirements.txt        adds arm_pyart
 ├── _checks.py
@@ -33,3 +33,14 @@ first. Set `GLM_URL` in climo_run.py if it lives elsewhere.
    "match the classifier (100.000%)".
 3. Then start `2020-10`, end `2025-12` (the field-mill record ends 2025-12-31; later months would be
    scored but excluded). The plan skips months already published.
+
+## Changes from the MRMS climatology's classifier (Nov 2026)
+mrms_classify.py here is the MRMS climatology's pinned v19 plus two changes, both driven by the case
+replays against the LWO logs:
+- Cumulus connectivity (NASA-STD-4010B LLCCR 35), on: physically connected cumulus are one cloud for
+  the -20 C / -10 C / +5 C rules, standoffs measured to the connected mass's nearest edge. Month files
+  scored with it carry "+conn" in their classifier tag. The 4.3b anvil exception is in the file
+  (CONNECT_ANVIL_43B) but off.
+- Field mills at 850 V/m (FM_ARCHIVE_VM in climo_merge.py): the KSC 1-minute archive reads ~15% below
+  what LWOs act on; 850 V/m matches the logs best (POD 0.62 -> 0.90, FAR 0.13 -> 0.16). Archive only.
+So this climatology and the MRMS one no longer differ only in the radar.

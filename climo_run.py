@@ -599,7 +599,7 @@ def main():
         k_found=np.array(rec["k_found"], bool), k_top=np.array(rec["k_top"], np.uint16),
         k_lc39a=np.array(rec["k_lc39a"], np.uint16), k_off=np.array(rec["k_off"], np.int16),
         glm=np.array(rec["glm"], bool), glm_n=np.array(rec["glm_n"], np.uint32),
-        classifier=np.array(f"{mc.VIEWER_VERSION_EXPECTED}+{K.KMLB_VERSION}+glm"),
+        classifier=np.array(f"{mc.VIEWER_VERSION_EXPECTED}+{K.KMLB_VERSION}+glm" + ("+conn" if mc.CONNECT_CUMULUS else "")),
         hours_planned=np.array(len(hours)))
     nk = int(np.sum(rec["k_found"]))
     nfull = int(np.sum(np.array(rec["k_lc39a"]) >= LC39A_FULL_HM))

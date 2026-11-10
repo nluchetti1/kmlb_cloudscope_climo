@@ -75,7 +75,7 @@ print(f"   hours {hrs}\n   glm ok {z['glm'].astype(int).tolist()}\n   glm_n {z['
 check(z["glm"].tolist() == [h != 18 for h in hrs], "GLM usable every hour except 18Z (half its files missing)")
 check(lit.tolist() == [h in (0, 15) for h in hrs], "lightning at LC-39A at 15Z and at 00Z (a 23:50 flash from the June file) - NLDN empty")
 check(z["glm_n"][hrs.index(15)] == 270 and z["glm_n"][hrs.index(0)] == 1, f"flash counts: 15Z {z['glm_n'][hrs.index(15)]}, 00Z {z['glm_n'][hrs.index(0)]}")
-check(str(z["classifier"]).endswith("+glm"), f"classifier recorded as {z['classifier']}")
+check(str(z["classifier"]).endswith(("+glm", "+glm+conn")), f"classifier recorded as {z['classifier']}")
 CR._glm_months.clear(); SERVE.pop("glm_202506.npz")
 check(CR.glm_flashes(Sess(), JUL) == ([], 0, False), "previous month's archive file missing -> no GLM for that sample (NLDN only)")
 buf = io.StringIO()

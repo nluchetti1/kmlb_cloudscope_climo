@@ -34,6 +34,6 @@ setTimeout(() => {
   ok(vm.runInContext("MREF", ctx) !== null, "MRMS climatology loaded for comparison");
   ok(/MRMS climatology \d+(\.\d)?%/.test(strip(els["g-viol"].innerHTML)), "headline: " + strip(els["g-viol"].innerHTML));
   ok(/MRMS \d+(\.\d)?%/.test(strip(els["g-rules"].innerHTML)), "rule list shows the MRMS share beside each rule");
-  ok(/mrms-v19\+kmlb-v2/.test(els.samples.textContent), "header: " + els.samples.textContent);
+  ok(/mrms-v19\+kmlb-v2.test(els.samples.textContent), "header: " + els.samples.textContent);
   console.log(`\n${bad} failure(s)`); process.exit(bad ? 1 : 0);
 }, 500);
